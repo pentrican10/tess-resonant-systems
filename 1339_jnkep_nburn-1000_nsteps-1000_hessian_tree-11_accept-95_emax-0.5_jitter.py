@@ -115,7 +115,7 @@ def model_scaled(sample_keys, param_bounds):
     numpyro.deterministic("tcmodel", tcmodel)
     
     # likelihood
-    lntcjitter =  numpyro.sample("lntcjitter", dist.Uniform(low=jnp.log(0.3/1440), high=jnp.log(30./1440.)))  # log-uniform prior for jitter between 0.3 and 30 min
+    lntcjitter =  numpyro.sample("lntcjitter", dist.Uniform(low=jnp.log(0.3/1440), high=jnp.log(15./1440.)))  # log-uniform prior for jitter between 0.3 and 15 min
     tcjitter = numpyro.deterministic("tcjitter", jnp.exp(lntcjitter))
     tcerrmodel = jnp.sqrt(jttv.errorobs_flatten**2 + tcjitter**2)
     numpyro.sample("obs", dist.Normal(loc=tcmodel, scale=tcerrmodel), obs=jttv.tcobs_flatten) 

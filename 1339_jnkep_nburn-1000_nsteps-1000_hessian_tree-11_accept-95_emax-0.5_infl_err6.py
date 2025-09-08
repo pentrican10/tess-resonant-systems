@@ -42,9 +42,17 @@ for j in range(2):
     tcobs.append(np.array(d.Tc[d.Planet_num == j + 2]))
     errorobs.append(np.array(d.Tc_err[d.Planet_num == j + 2]))
 # Inflate errors by factor of 3
-inflation_factor = 6
-inflated_errorobs = [errs * inflation_factor for errs in errorobs]
-inflated_list_of_transit_time_errs = [errs * inflation_factor for errs in list_of_transit_time_errs]
+inflation_factor = 3
+inflated_errorobs = []
+# only inflate for outer planet
+for i, errs in enumerate(errorobs):
+    if i == 1:  # second planet (index 1)
+        inflated_errorobs.append(errs * inflation_factor)
+    else:
+        inflated_errorobs.append(errs)
+
+# inflated_errorobs = [errs * inflation_factor for errs in errorobs]
+# inflated_list_of_transit_time_errs = [errs * inflation_factor for errs in list_of_transit_time_errs]
 
 
 ### run JaxTTV sim
