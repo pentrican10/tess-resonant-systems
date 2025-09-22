@@ -6,7 +6,7 @@ from jax import config, random
 import numpyro, jax
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_value
-config.update('jax_enable_x64', True)
+config.update('jax_enable_x64', False)
 numpyro.set_platform('cpu')
 num_chains = 4
 numpyro.set_host_device_count(num_chains)
@@ -42,8 +42,10 @@ time_obs = time_obs[sort_idx]
 flux_obs = flux_obs[sort_idx]
 error_obs = error_obs[sort_idx]
 
-window = 0.2  # days
+window = 0.6  # days
 time_segments, flux_segments, error_segments = [], [], []
+
+planet_ids = []
 
 for planet_idx, tplanet in enumerate(tcobs):
     for t0 in tplanet:
@@ -51,52 +53,64 @@ for planet_idx, tplanet in enumerate(tcobs):
         time_segments.append(time_obs[mask])
         flux_segments.append(flux_obs[mask])
         error_segments.append(error_obs[mask])
+        planet_ids.append(np.ones(np.sum(mask)) * planet_idx)
 
 # Concatenate segments
 time_obs_trim = np.concatenate(time_segments)
 flux_obs_trim = np.concatenate(flux_segments)
 error_obs_trim = np.concatenate(error_segments)
+planet_ids = np.concatenate(planet_ids).astype(int)
 
 time_obs = jnp.array(time_obs_trim)
 flux_obs = jnp.array(flux_obs_trim)
 error_obs = jnp.array(error_obs_trim)
+planet_ids = jnp.array(planet_ids)  
 
-# Kepler long cadence in days
-kepler_lc = 29.4 / 60 / 24  # ~0.02042 days
 
-def bin_lc(time, flux, error, lc_bin):
-    """
-    Bin time, flux, and error arrays to a specified cadence (lc_bin in days)
-    """
-    start = time[0]
-    end = time[-1]
-    bins = jnp.arange(start, end + lc_bin, lc_bin)
 
-    binned_time = []
-    binned_flux = []
-    binned_error = []
 
-    for i in range(len(bins)-1):
-        mask = (time >= bins[i]) & (time < bins[i+1])
-        if jnp.any(mask):
-            binned_time.append(jnp.mean(time[mask]))
-            binned_flux.append(jnp.mean(flux[mask]))
-            # propagate error assuming independent measurements
-            binned_error.append(jnp.sqrt(jnp.sum(error[mask]**2)) / jnp.sum(mask))
+bin_width = 29.4 / 1440.0  # days (~0.02042 d, 29.4 min)
 
-    return jnp.array(binned_time), jnp.array(binned_flux), jnp.array(binned_error)
+def bin_segment(t, f, e, pid, bin_width):
+    """Bin one transit segment to bin_width (days)."""
+    edges = np.arange(t.min(), t.max() + bin_width, bin_width)
+    t_b, f_b, e_b, pid_b = [], [], [], []
+    for i in range(len(edges) - 1):
+        mask = (t >= edges[i]) & (t < edges[i+1])
+        if not np.any(mask):
+            continue
+        w = 1.0 / e[mask]**2
+        t_b.append(np.average(t[mask], weights=w))
+        f_b.append(np.average(f[mask], weights=w))
+        e_b.append(np.sqrt(1.0 / np.sum(w)))
+        pid_b.append(pid)  # pid is a scalar, same for the whole segment
+    return np.array(t_b), np.array(f_b), np.array(e_b), np.array(pid_b)
 
-# Split before/after 2200 days
-mask_before = time_obs < 2200
-mask_after  = time_obs >= 2200
+# Loop over all segments
+binned = [bin_segment(t, f, e, pid[0] if np.ndim(pid) else pid, bin_width)
+          for t, f, e, pid in zip(time_segments, flux_segments, error_segments, planet_ids)]
 
-t_before, f_before, e_before = bin_lc(time_obs[mask_before], flux_obs[mask_before], error_obs[mask_before], kepler_lc)
-t_after,  f_after,  e_after  = bin_lc(time_obs[mask_after], flux_obs[mask_after], error_obs[mask_after], kepler_lc)
+# Concatenate results
+time_binned   = np.concatenate([b[0] for b in binned if len(b[0]) > 0])
+flux_binned   = np.concatenate([b[1] for b in binned if len(b[1]) > 0])
+error_binned  = np.concatenate([b[2] for b in binned if len(b[2]) > 0])
+planet_binned = np.concatenate([b[3] for b in binned if len(b[3]) > 0])
 
-# Combine
-time_obs = jnp.concatenate([t_before, t_after])
-flux_obs = jnp.concatenate([f_before, f_after])
-error_obs = jnp.concatenate([e_before, e_after])
+# Save to dataframe
+df_binned = pd.DataFrame({
+    "time": time_binned,
+    "flux": flux_binned,
+    "flux_err": error_binned,
+    "planet_number": planet_binned
+})
+df_binned.to_csv("toi1339_binned_lightcurves.csv", index=False)
+print(f"Saved {len(df_binned)} binned points.")
+
+time_obs = jnp.array(time_binned)
+flux_obs = jnp.array(flux_binned)
+error_obs = jnp.array(error_binned)
+planet_ids = jnp.array(planet_binned)
+
 
 
 nt = NbodyTransit(t_start, t_end, dt, tcobs, p_init, errorobs=errorobs, print_info=True)
@@ -109,8 +123,6 @@ p_init = np.array([8.88020257, 28.58140011, 38.35180318,
                    0.09494596, -0.04802669, -0.04114657,
                    1715.3554624, 1726.054591, 1743.55713087,
                    -10.90254937, -11.3564078 , -11.88909652,
-
-    
 ])
 
 popt = ttv_optim_curve_fit(nt, param_bounds_ttv)#, p_init=p_init)
@@ -159,21 +171,33 @@ def model_fix_ttv(par_dict, param_bounds_transit):
     residual = numpyro.deterministic("residual", flux_obs - fluxmodel - par["meanflux"])
     numpyro.deterministic("normed_residual", residual / error_obs)
     
-    # GP likelihood
-    lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
-    lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
-    lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
-    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
-    kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
-    gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
-    gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
-    numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
-    numpyro.deterministic("gppred", gp.predict(residual))
+    # # GP likelihood
+    # lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
+    # lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
+    # lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
+    # jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    # kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
+    # gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
+    # gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
+    # numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
+    # numpyro.deterministic("gppred", gp.predict(residual))
 
+    # Simple iid Gaussian likelihood with jitter
+    lnjitter = numpyro.sample("lnjitter", dist.Uniform(-14, -4).expand([3]))
+    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+
+    # Assign planet-specific jitter to each datapoint
+    point_jitter = numpyro.deterministic("point_jitter", jitter[planet_ids])
+    
+    # Likelihood
+    numpyro.sample(
+        "obs",
+        dist.Normal(0.0, jnp.sqrt(error_obs**2 + point_jitter**2)),
+        obs=residual,
+    )
 
 
 popt_transit = optim_svi(model_fix_ttv, 1e-2, 5000, 
-                         # p_initial = par_init, 
                          par_dict=popt, 
                          param_bounds_transit=param_bounds_transit)
 
@@ -225,19 +249,36 @@ def model_full(param_bounds_ttv, param_bounds_transit):
     numpyro.deterministic("tcmodel", tcmodel)
     numpyro.deterministic("fluxmodel", fluxmodel)  
 
-    # GP likelihood  
+    # # GP likelihood  
     residual = numpyro.deterministic("residual", flux_obs - fluxmodel - par["meanflux"])
     numpyro.deterministic("normed_residual", residual / error_obs)
-    lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
-    lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
-    lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
-    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
-    kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
-    gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
-    gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
-    numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
-    numpyro.deterministic("gppred", gp.predict(residual))
+    # lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
+    # lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
+    # lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
+    # jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    
+    # kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
+    # gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
+    # gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
+    
+    # numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
+    # numpyro.deterministic("gppred", gp.predict(residual))
 
+    # Simple iid Gaussian likelihood with jitter
+    lnjitter = numpyro.sample("lnjitter", dist.Uniform(-14, -4).expand([3]))
+    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+
+    # Assign planet-specific jitter to each datapoint
+    point_jitter = numpyro.deterministic("point_jitter", jitter[planet_ids])
+    
+    # Likelihood
+    numpyro.sample(
+        "obs",
+        dist.Normal(0.0, jnp.sqrt(error_obs**2 + point_jitter**2)),
+        obs=residual,
+    )
+
+    
 popt_full = optim_svi(model_full, 1e-2, 5000, 
                       p_initial=popt_full, 
                       param_bounds_ttv=param_bounds_ttv, 
@@ -249,13 +290,15 @@ with open('1339_jnkep_initial_fit_photodyn.pkl', 'wb') as f:
                  'popt_transit': popt_transit, 
                  'popt_full': popt_full, 
                  'param_bounds': param_bounds_ttv, 
-                 'param_bounds_transit': param_bounds_transit, 'keys_ttv': keys_ttv, 'keys_transit': keys_transit}, f)
+                 'param_bounds_transit': param_bounds_transit, 
+                 'keys_ttv': keys_ttv, 
+                 'keys_transit': keys_transit}, f)
 
 print('Initial fit data saved successfully')
 
 
 from numpyro.infer import MCMC, NUTS
-kernel = NUTS(model_full, dense_mass=True, init_strategy=init_to_value(values=popt_full), max_tree_depth=11)
+kernel = NUTS(model_full, dense_mass=True, init_strategy=init_to_value(values=popt_full), max_tree_depth=8)
 
 mcmc = MCMC(kernel, num_warmup=500, num_samples=1500, num_chains=num_chains)
 
@@ -267,5 +310,5 @@ mcmc.print_summary()
 
 # save output
 import dill
-with open("toi1339_photodynamics_gp_500burn_1500step.pkl", "wb") as f:
+with open("toi1339_photodynamics_500burn_1500step.pkl", "wb") as f:
     dill.dump(mcmc, f)
