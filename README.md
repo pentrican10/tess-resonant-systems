@@ -7,7 +7,7 @@
 - the mcmc run is run as a python file
     - python files starting with '3_' are meant to be run in order with the jupyter notebooks
 
-- create conda environment using: **hd191939.yml** (fix batman)
+- create conda environment using: **hd191939_env.yml** (fix batman)
 - run order:
     - 0_tess_limb_darkening.ipynb
     - 1_transit_fit_linear.ipynb
