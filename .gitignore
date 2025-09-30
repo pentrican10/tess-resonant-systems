@@ -6,3 +6,8 @@ data/
 archive_systems/
 stability_sims/
 mcmc_runs/
+toi4495-ttv-main/
+
+#Ignore files
+*.pkl
+TOI1339_lc_photodyn.csv
