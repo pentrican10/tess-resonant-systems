@@ -98,7 +98,7 @@ pdic_normal, pdic_student = jttv.check_residuals(popt)#, jitters=jitters)
 import pickle
 print(popt)
 print(param_bounds)
-with open('1339_jnkep_initial_fit_data_hessian_tree-11_accept-95_emax-0.5_infl_err3.pkl', 'wb') as f:
+with open('toi1339_ttv_initial_fit_data_hessian_tree-11_accept-95_emax-0.5_infl_err3.pkl', 'wb') as f:
     pickle.dump({'jttv': jttv, 'popt': popt, 'param_bounds': param_bounds}, f)
 
 print('Initial fit data saved successfully')
@@ -174,7 +174,7 @@ mcmc.print_summary()
 
 
 import dill
-with open("1339_jnkep_nburn-1000_nsteps-1000_hessian_tree-11_accept-95_emax-0.5_infl_err3.pkl", "wb") as f:
+with open("toi1339_ttv_nburn-1000_nsteps-1000_hessian_tree-11_accept-95_emax-0.5_infl_err3.pkl", "wb") as f:
     dill.dump(mcmc, f)
 
 

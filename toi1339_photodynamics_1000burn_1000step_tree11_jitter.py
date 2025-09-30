@@ -128,16 +128,32 @@ idx_bin = time_obs > 0 #2250
 # plt.plot(time_obs[idx_bin], flux_obs[idx_bin], '.')
 tbin, fbin, ferr, counts = bin_light_curve(time_obs[idx_bin], flux_obs[idx_bin], error_obs[idx_bin])
 idxc = counts > 5
+# planet ids 
+planet_bin = []
+bin_width = kepler_bin
+binnumber = np.digitize(time_obs[idx_bin], 
+                        np.arange(tbin[0]-bin_width/2, tbin[-1]+bin_width/2, bin_width)) - 1
+for i in range(len(tbin)):
+    mask = binnumber == i
+    if np.any(mask):
+        # majority vote for planet id inside this bin
+        pid = np.bincount(planet_ids[idx_bin][mask]).argmax()
+        planet_bin.append(pid)
+    else:
+        planet_bin.append(-1)  # placeholder for empty bin
+
+planet_bin = np.array(planet_bin)
+planet_ids = np.r_[planet_ids[~idx_bin], planet_bin[idxc]]
+
 time_obs = np.r_[time_obs[~idx_bin], tbin[idxc]]
 flux_obs = np.r_[flux_obs[~idx_bin], fbin[idxc]]
 error_obs = np.r_[error_obs[~idx_bin], ferr[idxc]]
-# plt.plot(time_obs, flux_obs, '.')
 
 
 time_obs = jnp.array(time_obs)
 flux_obs = jnp.array(flux_obs)
 error_obs = jnp.array(error_obs)
-# planet_ids = jnp.array(planet_binned)
+planet_ids = jnp.array(planet_ids)
 
 
 
@@ -204,11 +220,18 @@ def model_fix_ttv(par_dict, param_bounds_transit):
     # GP likelihood
     lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
     lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
-    lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
-    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    
+    # lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
+    # jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    # per-planet jitters
+    lnjitter = numpyro.sample(
+        "lnjitter", dist.Uniform(low=-14, high=-4).expand([n_planets]).to_event(1)
+    )
+    jitter_per_point = jnp.exp(lnjitter[planet_ids])
+    
     kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
     gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
-    gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
+    gp.compute(nt.times_lc, diag=error_obs**2 + jitter_per_point**2)
     numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
     numpyro.deterministic("gppred", gp.predict(residual))
 
@@ -269,11 +292,18 @@ def model_full(param_bounds_ttv, param_bounds_transit):
     numpyro.deterministic("normed_residual", residual / error_obs)
     lna = numpyro.sample("lna", dist.Uniform(low=-14, high=-4))
     lnc = numpyro.sample("lnc", dist.Uniform(low=-5, high=1))
-    lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
-    jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    
+    # lnjitter = numpyro.sample("lnjitter", dist.Uniform(low=-14, high=-4))
+    # jitter = numpyro.deterministic("jitter", jnp.exp(lnjitter))
+    # per-planet jitters
+    lnjitter = numpyro.sample(
+        "lnjitter", dist.Uniform(low=-14, high=-4).expand([n_planets]).to_event(1)
+    )
+    jitter_per_point = jnp.exp(lnjitter[planet_ids])
+    
     kernel = jax_terms.Matern32Term(sigma=jnp.exp(lna), rho=jnp.exp(lnc))
     gp = celerite2.jax.GaussianProcess(kernel, mean=0.0)
-    gp.compute(nt.times_lc, diag=error_obs**2 + jitter**2)
+    gp.compute(nt.times_lc, diag=error_obs**2 + jitter_per_point**2)
     numpyro.sample("obs", gp.numpyro_dist(), obs=residual)
     numpyro.deterministic("gppred", gp.predict(residual))
 
@@ -284,7 +314,7 @@ popt_full = optim_svi(model_full, 1e-2, 5000,
                       param_bounds_transit=param_bounds_transit)
 
 import pickle 
-with open('1339_jnkep_initial_fit_photodyn_tree11.pkl', 'wb') as f:
+with open('toi1339_photodynamics_initial_fit_tree11_jitter.pkl', 'wb') as f:
     pickle.dump({'nt': nt, 
                  'popt_transit': popt_transit, 
                  'popt_full': popt_full, 
@@ -309,5 +339,5 @@ mcmc.print_summary()
 
 # save output
 import dill
-with open("toi1339_photodynamics_1000burn_1000step_tree11.pkl", "wb") as f:
+with open("toi1339_photodynamics_1000burn_1000step_tree11_jitter.pkl", "wb") as f:
     dill.dump(mcmc, f)
